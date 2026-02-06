@@ -518,7 +518,7 @@ def memory_stream_source(spark):
 
 
 # ============================================================================
-# Delta Table Cleanup Fixture
+# Delta Table Cleanup Fixture (Path-based)
 # ============================================================================
 
 @pytest.fixture
@@ -554,4 +554,615 @@ def temp_delta_tables(spark, temp_path):
     manager = DeltaTableManager()
     yield manager
     manager.cleanup()
+
+
+# ============================================================================
+# Test Schema/Database Management Fixtures
+# ============================================================================
+
+@pytest.fixture(scope="module")
+def test_database_name():
+    """
+    Generate a unique test database name.
+    Uses timestamp to avoid conflicts between test runs.
+    """
+    import time
+    return f"test_cdc_pipeline_{int(time.time())}"
+
+
+@pytest.fixture(scope="module")
+def test_database(spark, test_database_name):
+    """
+    Create a test database/schema for the test module.
+    
+    The database is created at module scope and cleaned up after all tests
+    in the module complete. This allows multiple tests to share tables.
+    
+    Yields:
+        str: The name of the created database
+    """
+    # Create the test database
+    spark.sql(f"CREATE DATABASE IF NOT EXISTS {test_database_name}")
+    spark.sql(f"USE {test_database_name}")
+    
+    print(f"Created test database: {test_database_name}")
+    
+    yield test_database_name
+    
+    # Cleanup: drop all tables and the database
+    try:
+        tables = spark.sql(f"SHOW TABLES IN {test_database_name}").collect()
+        for table in tables:
+            table_name = table["tableName"]
+            spark.sql(f"DROP TABLE IF EXISTS {test_database_name}.{table_name}")
+        spark.sql(f"DROP DATABASE IF EXISTS {test_database_name} CASCADE")
+        print(f"Cleaned up test database: {test_database_name}")
+    except Exception as e:
+        print(f"Warning: Failed to cleanup database {test_database_name}: {e}")
+
+
+@pytest.fixture
+def test_schema_manager(spark, test_database):
+    """
+    Factory fixture for creating and managing test schemas within a database.
+    
+    Provides methods to:
+    - Create schemas
+    - Drop schemas
+    - List tables in schemas
+    
+    Usage:
+        schema_name = test_schema_manager.create_schema("bronze")
+        test_schema_manager.drop_schema(schema_name)
+    """
+    class SchemaManager:
+        def __init__(self, database: str):
+            self.database = database
+            self.schemas_created = []
+        
+        def create_schema(self, schema_name: str) -> str:
+            """Create a schema within the test database."""
+            full_name = f"{self.database}.{schema_name}"
+            # In non-Unity Catalog, schemas are databases
+            # For Unity Catalog, this would be different
+            spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
+            self.schemas_created.append(schema_name)
+            return schema_name
+        
+        def drop_schema(self, schema_name: str, cascade: bool = True):
+            """Drop a schema."""
+            cascade_str = "CASCADE" if cascade else ""
+            spark.sql(f"DROP SCHEMA IF EXISTS {schema_name} {cascade_str}")
+            if schema_name in self.schemas_created:
+                self.schemas_created.remove(schema_name)
+        
+        def list_tables(self, schema_name: str = None) -> List[str]:
+            """List tables in a schema or the default database."""
+            target = schema_name if schema_name else self.database
+            tables = spark.sql(f"SHOW TABLES IN {target}").collect()
+            return [t["tableName"] for t in tables]
+        
+        def cleanup(self):
+            """Clean up all created schemas."""
+            for schema in self.schemas_created[:]:
+                self.drop_schema(schema, cascade=True)
+    
+    manager = SchemaManager(test_database)
+    yield manager
+    manager.cleanup()
+
+
+# ============================================================================
+# Managed Table Creation Fixtures
+# ============================================================================
+
+@pytest.fixture
+def create_managed_table(spark, test_database):
+    """
+    Factory fixture to create managed Delta tables in the test database.
+    
+    Tables are automatically tracked for cleanup.
+    
+    Usage:
+        table_name = create_managed_table(
+            name="customers",
+            df=sample_df,
+            enable_cdf=True,
+            partition_by=["date"]
+        )
+    """
+    tables_created = []
+    
+    def _create_table(
+        name: str,
+        df,
+        enable_cdf: bool = False,
+        partition_by: List[str] = None,
+        table_properties: Dict[str, str] = None
+    ) -> str:
+        """
+        Create a managed Delta table.
+        
+        Args:
+            name: Table name (will be created in test database)
+            df: DataFrame to write
+            enable_cdf: Enable Change Data Feed on the table
+            partition_by: Columns to partition by
+            table_properties: Additional table properties
+            
+        Returns:
+            Full table name (database.table)
+        """
+        full_name = f"{test_database}.{name}"
+        
+        # Build writer
+        writer = df.write.format("delta").mode("overwrite")
+        
+        if partition_by:
+            writer = writer.partitionBy(*partition_by)
+        
+        # Create table
+        writer.saveAsTable(full_name)
+        tables_created.append(full_name)
+        
+        # Apply table properties
+        if enable_cdf:
+            spark.sql(f"ALTER TABLE {full_name} SET TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')")
+        
+        if table_properties:
+            for key, value in table_properties.items():
+                spark.sql(f"ALTER TABLE {full_name} SET TBLPROPERTIES ('{key}' = '{value}')")
+        
+        return full_name
+    
+    yield _create_table
+    
+    # Cleanup created tables
+    for table in tables_created:
+        try:
+            spark.sql(f"DROP TABLE IF EXISTS {table}")
+        except Exception:
+            pass
+
+
+@pytest.fixture
+def create_delta_table_with_cdf(spark, test_database):
+    """
+    Factory fixture specifically for creating Delta tables with CDF enabled.
+    
+    CDF (Change Data Feed) is required for tracking changes in Delta tables,
+    which is essential for CDC pipeline testing.
+    
+    Usage:
+        table_name = create_delta_table_with_cdf("silver_customers", initial_df)
+        # Now can read changes via spark.read.format("delta").option("readChangeFeed", "true")
+    """
+    tables_created = []
+    
+    def _create_cdf_table(
+        name: str,
+        df,
+        primary_keys: List[str] = None
+    ) -> str:
+        """
+        Create a Delta table with Change Data Feed enabled.
+        
+        Args:
+            name: Table name
+            df: Initial data to write
+            primary_keys: Optional primary key columns (for documentation)
+            
+        Returns:
+            Full table name
+        """
+        full_name = f"{test_database}.{name}"
+        
+        # Create table
+        df.write.format("delta").mode("overwrite").saveAsTable(full_name)
+        tables_created.append(full_name)
+        
+        # Enable CDF
+        spark.sql(f"""
+            ALTER TABLE {full_name} 
+            SET TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+        """)
+        
+        # Add comment if primary keys specified
+        if primary_keys:
+            pk_str = ", ".join(primary_keys)
+            spark.sql(f"COMMENT ON TABLE {full_name} IS 'Primary Keys: {pk_str}'")
+        
+        return full_name
+    
+    yield _create_cdf_table
+    
+    # Cleanup
+    for table in tables_created:
+        try:
+            spark.sql(f"DROP TABLE IF EXISTS {table}")
+        except Exception:
+            pass
+
+
+# ============================================================================
+# CDC Pipeline Table Setup Fixtures
+# ============================================================================
+
+@pytest.fixture
+def cdc_pipeline_tables(spark, test_database, customers_cdc_schema, 
+                        customers_silver_schema, scd2_schema, base_timestamp):
+    """
+    Create the complete set of tables needed for CDC pipeline testing.
+    
+    Creates:
+    - customers_cdc: Bronze layer raw CDC data
+    - customers_cdc_clean: Cleaned CDC data (view simulation)
+    - customers: Silver layer materialized table
+    - SCD2_customers: SCD Type 2 history table
+    
+    This fixture sets up a realistic pipeline structure for integration tests.
+    """
+    tables = {}
+    
+    # Bronze layer: Raw CDC data
+    bronze_data = [
+        (1, "Alice", "123 Main St", "alice@email.com", "APPEND", base_timestamp, None),
+        (2, "Bob", "456 Oak Ave", "bob@email.com", "APPEND", base_timestamp, None),
+    ]
+    bronze_df = spark.createDataFrame(bronze_data, customers_cdc_schema)
+    bronze_name = f"{test_database}.customers_cdc"
+    bronze_df.write.format("delta").mode("overwrite").saveAsTable(bronze_name)
+    tables["bronze"] = bronze_name
+    
+    # Silver layer: Materialized customers
+    silver_data = [
+        (1, "Alice", "123 Main St", "alice@email.com"),
+        (2, "Bob", "456 Oak Ave", "bob@email.com"),
+    ]
+    silver_df = spark.createDataFrame(silver_data, customers_silver_schema)
+    silver_name = f"{test_database}.customers"
+    silver_df.write.format("delta").mode("overwrite").saveAsTable(silver_name)
+    spark.sql(f"ALTER TABLE {silver_name} SET TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')")
+    tables["silver"] = silver_name
+    
+    # SCD2 layer: Historical tracking
+    scd2_data = [
+        (1, "Alice", "123 Main St", "alice@email.com", base_timestamp, None),
+        (2, "Bob", "456 Oak Ave", "bob@email.com", base_timestamp, None),
+    ]
+    scd2_df = spark.createDataFrame(scd2_data, scd2_schema)
+    scd2_name = f"{test_database}.scd2_customers"
+    scd2_df.write.format("delta").mode("overwrite").saveAsTable(scd2_name)
+    tables["scd2"] = scd2_name
+    
+    yield tables
+    
+    # Cleanup
+    for table in tables.values():
+        try:
+            spark.sql(f"DROP TABLE IF EXISTS {table}")
+        except Exception:
+            pass
+
+
+@pytest.fixture
+def empty_cdc_pipeline_tables(spark, test_database, customers_cdc_schema,
+                              customers_silver_schema, scd2_schema):
+    """
+    Create empty tables with correct schemas for CDC pipeline testing.
+    
+    Useful for testing initial data load scenarios where tables exist
+    but have no data.
+    """
+    tables = {}
+    
+    # Create empty DataFrames with correct schemas
+    empty_bronze = spark.createDataFrame([], customers_cdc_schema)
+    empty_silver = spark.createDataFrame([], customers_silver_schema)
+    empty_scd2 = spark.createDataFrame([], scd2_schema)
+    
+    # Bronze
+    bronze_name = f"{test_database}.customers_cdc_empty"
+    empty_bronze.write.format("delta").mode("overwrite").saveAsTable(bronze_name)
+    tables["bronze"] = bronze_name
+    
+    # Silver with CDF
+    silver_name = f"{test_database}.customers_empty"
+    empty_silver.write.format("delta").mode("overwrite").saveAsTable(silver_name)
+    spark.sql(f"ALTER TABLE {silver_name} SET TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')")
+    tables["silver"] = silver_name
+    
+    # SCD2
+    scd2_name = f"{test_database}.scd2_customers_empty"
+    empty_scd2.write.format("delta").mode("overwrite").saveAsTable(scd2_name)
+    tables["scd2"] = scd2_name
+    
+    yield tables
+    
+    # Cleanup
+    for table in tables.values():
+        try:
+            spark.sql(f"DROP TABLE IF EXISTS {table}")
+        except Exception:
+            pass
+
+
+# ============================================================================
+# Multi-Table Pipeline Setup Fixture
+# ============================================================================
+
+@pytest.fixture
+def multi_table_pipeline_setup(spark, test_database, generic_cdc_schema, base_timestamp):
+    """
+    Create multiple tables simulating a multi-table CDC pipeline.
+    
+    Creates bronze and silver tables for:
+    - customers
+    - orders
+    - products
+    
+    This matches the structure of the Python pipeline that loops over folders.
+    """
+    table_configs = {
+        "customers": {
+            "bronze_data": [
+                (1, "Customer 1", "APPEND", base_timestamp, None),
+                (2, "Customer 2", "APPEND", base_timestamp, None),
+            ],
+            "silver_schema": StructType([
+                StructField("id", LongType(), False),
+                StructField("data", StringType(), True),
+            ])
+        },
+        "orders": {
+            "bronze_data": [
+                (100, "Order 100", "APPEND", base_timestamp, None),
+                (101, "Order 101", "APPEND", base_timestamp, None),
+            ],
+            "silver_schema": StructType([
+                StructField("id", LongType(), False),
+                StructField("data", StringType(), True),
+            ])
+        },
+        "products": {
+            "bronze_data": [
+                (1000, "Product A", "APPEND", base_timestamp, None),
+                (1001, "Product B", "APPEND", base_timestamp, None),
+            ],
+            "silver_schema": StructType([
+                StructField("id", LongType(), False),
+                StructField("data", StringType(), True),
+            ])
+        }
+    }
+    
+    created_tables = {}
+    
+    for table_name, config in table_configs.items():
+        # Bronze table
+        bronze_df = spark.createDataFrame(config["bronze_data"], generic_cdc_schema)
+        bronze_full_name = f"{test_database}.{table_name}_cdc"
+        bronze_df.write.format("delta").mode("overwrite").saveAsTable(bronze_full_name)
+        
+        # Silver table (empty initially)
+        silver_df = spark.createDataFrame([], config["silver_schema"])
+        silver_full_name = f"{test_database}.{table_name}"
+        silver_df.write.format("delta").mode("overwrite").saveAsTable(silver_full_name)
+        spark.sql(f"ALTER TABLE {silver_full_name} SET TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')")
+        
+        created_tables[table_name] = {
+            "bronze": bronze_full_name,
+            "silver": silver_full_name
+        }
+    
+    yield created_tables
+    
+    # Cleanup all tables
+    for table_info in created_tables.values():
+        for table in table_info.values():
+            try:
+                spark.sql(f"DROP TABLE IF EXISTS {table}")
+            except Exception:
+                pass
+
+
+# ============================================================================
+# Table Operation Utilities
+# ============================================================================
+
+@pytest.fixture
+def table_operations(spark):
+    """
+    Utility fixture providing common table operations for testing.
+    
+    Provides methods for:
+    - MERGE operations
+    - INSERT/UPDATE/DELETE
+    - Reading CDF (Change Data Feed)
+    - Table history inspection
+    """
+    class TableOperations:
+        def __init__(self):
+            pass
+        
+        def merge_into(self, target_table: str, source_df, 
+                       match_columns: List[str],
+                       update_columns: List[str] = None,
+                       delete_condition: str = None) -> int:
+            """
+            Perform a MERGE INTO operation.
+            
+            Args:
+                target_table: Target table name
+                source_df: Source DataFrame
+                match_columns: Columns to match on
+                update_columns: Columns to update (None = all non-key columns)
+                delete_condition: Optional delete condition
+                
+            Returns:
+                Number of rows affected
+            """
+            from delta.tables import DeltaTable
+            
+            target = DeltaTable.forName(spark, target_table)
+            
+            # Build match condition
+            match_cond = " AND ".join([f"target.{c} = source.{c}" for c in match_columns])
+            
+            # Build update mapping
+            if update_columns is None:
+                update_columns = [c for c in source_df.columns if c not in match_columns]
+            update_map = {c: f"source.{c}" for c in update_columns}
+            
+            # Build merge
+            merge = (target.alias("target")
+                    .merge(source_df.alias("source"), match_cond))
+            
+            if delete_condition:
+                merge = merge.whenMatchedDelete(condition=delete_condition)
+            
+            merge = (merge
+                    .whenMatchedUpdate(set=update_map)
+                    .whenNotMatchedInsertAll())
+            
+            merge.execute()
+            
+            return source_df.count()
+        
+        def read_cdf(self, table_name: str, 
+                     start_version: int = None,
+                     start_timestamp: str = None) -> Any:
+            """
+            Read Change Data Feed from a Delta table.
+            
+            Args:
+                table_name: Table name
+                start_version: Starting version (optional)
+                start_timestamp: Starting timestamp (optional)
+                
+            Returns:
+                DataFrame with CDF data including _change_type column
+            """
+            reader = (spark.read
+                     .format("delta")
+                     .option("readChangeFeed", "true"))
+            
+            if start_version is not None:
+                reader = reader.option("startingVersion", start_version)
+            elif start_timestamp is not None:
+                reader = reader.option("startingTimestamp", start_timestamp)
+            else:
+                reader = reader.option("startingVersion", 0)
+            
+            return reader.table(table_name)
+        
+        def get_table_history(self, table_name: str, limit: int = 10) -> Any:
+            """Get Delta table history."""
+            from delta.tables import DeltaTable
+            return DeltaTable.forName(spark, table_name).history(limit)
+        
+        def get_table_version(self, table_name: str) -> int:
+            """Get current version of a Delta table."""
+            history = self.get_table_history(table_name, limit=1)
+            return history.collect()[0]["version"]
+        
+        def insert_into(self, table_name: str, df) -> None:
+            """Insert data into a table."""
+            df.write.format("delta").mode("append").saveAsTable(table_name)
+        
+        def update_table(self, table_name: str, 
+                         condition: str, 
+                         update_values: Dict[str, str]) -> None:
+            """Update rows in a table."""
+            set_clause = ", ".join([f"{k} = {v}" for k, v in update_values.items()])
+            spark.sql(f"UPDATE {table_name} SET {set_clause} WHERE {condition}")
+        
+        def delete_from(self, table_name: str, condition: str) -> None:
+            """Delete rows from a table."""
+            spark.sql(f"DELETE FROM {table_name} WHERE {condition}")
+        
+        def truncate_table(self, table_name: str) -> None:
+            """Truncate a table (delete all rows)."""
+            spark.sql(f"TRUNCATE TABLE {table_name}")
+    
+    return TableOperations()
+
+
+# ============================================================================
+# Table Assertion Fixtures
+# ============================================================================
+
+@pytest.fixture
+def assert_table_equals(spark, assert_dataframe_equal):
+    """
+    Assert that a table contains expected data.
+    
+    Usage:
+        assert_table_equals("my_table", expected_df)
+    """
+    def _assert_equals(table_name: str, expected_df, check_order: bool = False):
+        actual_df = spark.table(table_name)
+        assert_dataframe_equal(expected_df, actual_df, check_order=check_order)
+    
+    return _assert_equals
+
+
+@pytest.fixture
+def assert_table_row_count(spark):
+    """
+    Assert that a table has expected row count.
+    
+    Usage:
+        assert_table_row_count("my_table", 100)
+    """
+    def _assert_count(table_name: str, expected_count: int):
+        actual_count = spark.table(table_name).count()
+        assert actual_count == expected_count, (
+            f"Table {table_name} row count mismatch: "
+            f"expected {expected_count}, got {actual_count}"
+        )
+    
+    return _assert_count
+
+
+@pytest.fixture
+def assert_cdf_changes(spark, table_operations):
+    """
+    Assert expected changes in Change Data Feed.
+    
+    Usage:
+        assert_cdf_changes(
+            table_name="my_table",
+            expected_inserts=2,
+            expected_updates=1,
+            expected_deletes=0
+        )
+    """
+    def _assert_changes(table_name: str,
+                        start_version: int = 0,
+                        expected_inserts: int = None,
+                        expected_updates: int = None,
+                        expected_deletes: int = None):
+        cdf = table_operations.read_cdf(table_name, start_version=start_version)
+        
+        if expected_inserts is not None:
+            actual_inserts = cdf.filter("_change_type = 'insert'").count()
+            assert actual_inserts == expected_inserts, (
+                f"Insert count mismatch: expected {expected_inserts}, got {actual_inserts}"
+            )
+        
+        if expected_updates is not None:
+            # Updates show as update_preimage + update_postimage pairs
+            actual_updates = cdf.filter("_change_type = 'update_postimage'").count()
+            assert actual_updates == expected_updates, (
+                f"Update count mismatch: expected {expected_updates}, got {actual_updates}"
+            )
+        
+        if expected_deletes is not None:
+            actual_deletes = cdf.filter("_change_type = 'delete'").count()
+            assert actual_deletes == expected_deletes, (
+                f"Delete count mismatch: expected {expected_deletes}, got {actual_deletes}"
+            )
+    
+    return _assert_changes
 

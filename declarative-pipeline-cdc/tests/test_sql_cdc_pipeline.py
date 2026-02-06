@@ -917,3 +917,635 @@ class TestEndToEndPipeline:
         expected_total = num_batches * records_per_batch
         assert target.count() == expected_total
 
+
+# ============================================================================
+# Test Class: Table-Based CDC Tests
+# ============================================================================
+
+class TestCDCWithTables:
+    """
+    CDC tests that load sample data into actual Delta tables.
+    
+    These tests use the table creation fixtures from conftest.py to create
+    real Delta tables and perform CDC operations against them.
+    
+    Why: Validates that CDC logic works correctly with actual Delta table
+    operations (MERGE, INSERT, UPDATE, DELETE) and CDF tracking.
+    """
+    
+    def test_load_cdc_data_into_bronze_table(self, spark, test_database,
+                                             customers_cdc_schema, base_timestamp):
+        """
+        Test loading CDC data into a bronze Delta table.
+        
+        Why: Bronze layer receives raw CDC data from source systems.
+        """
+        # Arrange: Create bronze table
+        bronze_table = f"{test_database}.test_bronze_customers_cdc"
+        empty_df = spark.createDataFrame([], customers_cdc_schema)
+        empty_df.write.format("delta").mode("overwrite").saveAsTable(bronze_table)
+        
+        try:
+            # Act: Load CDC data
+            cdc_data = [
+                (1, "Alice", "123 Main St", "alice@email.com", "APPEND", base_timestamp, None),
+                (2, "Bob", "456 Oak Ave", "bob@email.com", "APPEND", base_timestamp, None),
+                (3, "Charlie", "789 Pine Rd", "charlie@email.com", "APPEND", base_timestamp, None),
+            ]
+            cdc_df = spark.createDataFrame(cdc_data, customers_cdc_schema)
+            cdc_df.write.format("delta").mode("append").saveAsTable(bronze_table)
+            
+            # Assert: Verify data loaded
+            result = spark.table(bronze_table)
+            assert result.count() == 3
+            
+            # Verify schema preserved
+            assert "operation" in result.columns
+            assert "_rescued_data" in result.columns
+            
+        finally:
+            spark.sql(f"DROP TABLE IF EXISTS {bronze_table}")
+    
+    def test_apply_quality_expectations_on_table_data(self, spark, test_database,
+                                                       customers_cdc_schema, base_timestamp):
+        """
+        Test applying data quality expectations to data loaded from tables.
+        
+        Why: Validates that expectations filter bad records from table data.
+        """
+        # Arrange: Create and populate bronze table with mixed quality data
+        bronze_table = f"{test_database}.test_quality_bronze"
+        
+        mixed_data = [
+            # Valid records
+            (1, "Alice", "Addr1", "alice@email.com", "APPEND", base_timestamp, None),
+            (2, "Bob", "Addr2", "bob@email.com", "UPDATE", base_timestamp, None),
+            # Invalid: NULL id
+            (None, "No ID", "Addr", "noid@email.com", "APPEND", base_timestamp, None),
+            # Invalid: Bad operation
+            (3, "Bad Op", "Addr", "badop@email.com", "INVALID", base_timestamp, None),
+            # Invalid: Rescued data
+            (4, "Bad Schema", "Addr", "schema@email.com", "APPEND", base_timestamp, '{"x":1}'),
+        ]
+        mixed_df = spark.createDataFrame(mixed_data, customers_cdc_schema)
+        mixed_df.write.format("delta").mode("overwrite").saveAsTable(bronze_table)
+        
+        try:
+            # Act: Read from table and apply expectations
+            bronze_df = spark.table(bronze_table)
+            clean_df = apply_data_quality_expectations(bronze_df)
+            
+            # Assert: Only 2 valid records remain
+            assert clean_df.count() == 2
+            valid_ids = set(row["id"] for row in clean_df.collect())
+            assert valid_ids == {1, 2}
+            
+        finally:
+            spark.sql(f"DROP TABLE IF EXISTS {bronze_table}")
+    
+    def test_cdc_merge_to_silver_table(self, spark, test_database,
+                                       customers_cdc_schema, customers_silver_schema,
+                                       table_operations, base_timestamp):
+        """
+        Test MERGE operation from bronze CDC data to silver table.
+        
+        Why: Silver layer receives processed CDC via MERGE (upsert) operations.
+        """
+        # Arrange: Create tables
+        bronze_table = f"{test_database}.test_merge_bronze"
+        silver_table = f"{test_database}.test_merge_silver"
+        
+        # Create bronze with CDC data
+        bronze_data = [
+            (1, "Alice", "123 Main St", "alice@email.com", "APPEND", base_timestamp, None),
+            (2, "Bob", "456 Oak Ave", "bob@email.com", "APPEND", base_timestamp, None),
+        ]
+        bronze_df = spark.createDataFrame(bronze_data, customers_cdc_schema)
+        bronze_df.write.format("delta").mode("overwrite").saveAsTable(bronze_table)
+        
+        # Create empty silver table
+        silver_df = spark.createDataFrame([], customers_silver_schema)
+        silver_df.write.format("delta").mode("overwrite").saveAsTable(silver_table)
+        
+        try:
+            # Act: Process CDC and merge to silver
+            # 1. Read bronze
+            raw_cdc = spark.table(bronze_table)
+            
+            # 2. Apply quality expectations
+            clean_cdc = apply_data_quality_expectations(raw_cdc)
+            
+            # 3. Deduplicate
+            deduped_cdc = deduplicate_by_sequence(clean_cdc)
+            
+            # 4. Prepare for merge (remove CDC metadata columns)
+            merge_data = deduped_cdc.select("id", "name", "address", "email")
+            
+            # 5. Merge to silver
+            table_operations.merge_into(
+                target_table=silver_table,
+                source_df=merge_data,
+                match_columns=["id"],
+                update_columns=["name", "address", "email"]
+            )
+            
+            # Assert: Silver has 2 customers
+            result = spark.table(silver_table)
+            assert result.count() == 2
+            
+            # Verify data integrity
+            alice = result.filter("id = 1").collect()[0]
+            assert alice["name"] == "Alice"
+            assert alice["address"] == "123 Main St"
+            
+        finally:
+            spark.sql(f"DROP TABLE IF EXISTS {bronze_table}")
+            spark.sql(f"DROP TABLE IF EXISTS {silver_table}")
+    
+    def test_cdc_update_operation_on_tables(self, spark, test_database,
+                                            customers_cdc_schema, customers_silver_schema,
+                                            table_operations, base_timestamp):
+        """
+        Test CDC UPDATE operation using actual table merge.
+        
+        Why: Validates that UPDATE CDC records correctly modify existing rows.
+        """
+        # Arrange: Create tables with initial data
+        bronze_table = f"{test_database}.test_update_bronze"
+        silver_table = f"{test_database}.test_update_silver"
+        
+        # Initial silver data
+        initial_silver = [
+            (1, "Alice Old", "Old Address", "old@email.com"),
+            (2, "Bob", "456 Oak Ave", "bob@email.com"),
+        ]
+        silver_df = spark.createDataFrame(initial_silver, customers_silver_schema)
+        silver_df.write.format("delta").mode("overwrite").saveAsTable(silver_table)
+        
+        # CDC update for Alice
+        update_ts = base_timestamp + timedelta(hours=1)
+        update_cdc = [
+            (1, "Alice New", "New Address", "new@email.com", "UPDATE", update_ts, None),
+        ]
+        cdc_df = spark.createDataFrame(update_cdc, customers_cdc_schema)
+        cdc_df.write.format("delta").mode("overwrite").saveAsTable(bronze_table)
+        
+        try:
+            # Act: Process update CDC
+            raw_cdc = spark.table(bronze_table)
+            clean_cdc = apply_data_quality_expectations(raw_cdc)
+            deduped_cdc = deduplicate_by_sequence(clean_cdc)
+            merge_data = deduped_cdc.select("id", "name", "address", "email")
+            
+            table_operations.merge_into(
+                target_table=silver_table,
+                source_df=merge_data,
+                match_columns=["id"],
+                update_columns=["name", "address", "email"]
+            )
+            
+            # Assert: Alice updated, Bob unchanged
+            result = spark.table(silver_table)
+            assert result.count() == 2
+            
+            alice = result.filter("id = 1").collect()[0]
+            assert alice["name"] == "Alice New"
+            assert alice["address"] == "New Address"
+            
+            bob = result.filter("id = 2").collect()[0]
+            assert bob["name"] == "Bob"  # Unchanged
+            
+        finally:
+            spark.sql(f"DROP TABLE IF EXISTS {bronze_table}")
+            spark.sql(f"DROP TABLE IF EXISTS {silver_table}")
+    
+    def test_cdc_delete_operation_on_tables(self, spark, test_database,
+                                            customers_cdc_schema, customers_silver_schema,
+                                            table_operations, base_timestamp):
+        """
+        Test CDC DELETE operation using actual table delete.
+        
+        Why: Validates that DELETE CDC records correctly remove rows.
+        """
+        # Arrange: Create tables
+        bronze_table = f"{test_database}.test_delete_bronze"
+        silver_table = f"{test_database}.test_delete_silver"
+        
+        # Initial silver data
+        initial_silver = [
+            (1, "Alice", "Addr1", "alice@email.com"),
+            (2, "Bob", "Addr2", "bob@email.com"),
+            (3, "Charlie", "Addr3", "charlie@email.com"),
+        ]
+        silver_df = spark.createDataFrame(initial_silver, customers_silver_schema)
+        silver_df.write.format("delta").mode("overwrite").saveAsTable(silver_table)
+        
+        # CDC delete for Bob
+        delete_ts = base_timestamp + timedelta(hours=1)
+        delete_cdc = [
+            (2, None, None, None, "DELETE", delete_ts, None),
+        ]
+        cdc_df = spark.createDataFrame(delete_cdc, customers_cdc_schema)
+        cdc_df.write.format("delta").mode("overwrite").saveAsTable(bronze_table)
+        
+        try:
+            # Act: Process delete CDC
+            raw_cdc = spark.table(bronze_table)
+            clean_cdc = apply_data_quality_expectations(raw_cdc)
+            
+            # Extract delete IDs
+            delete_ids = [row["id"] for row in clean_cdc.filter("operation = 'DELETE'").collect()]
+            
+            # Delete from silver
+            for id_val in delete_ids:
+                table_operations.delete_from(silver_table, f"id = {id_val}")
+            
+            # Assert: Bob deleted
+            result = spark.table(silver_table)
+            assert result.count() == 2
+            assert result.filter("id = 2").count() == 0
+            assert result.filter("id = 1").count() == 1
+            assert result.filter("id = 3").count() == 1
+            
+        finally:
+            spark.sql(f"DROP TABLE IF EXISTS {bronze_table}")
+            spark.sql(f"DROP TABLE IF EXISTS {silver_table}")
+    
+    def test_mixed_cdc_operations_on_tables(self, spark, test_database,
+                                            customers_cdc_schema, customers_silver_schema,
+                                            table_operations, base_timestamp):
+        """
+        Test batch with INSERT, UPDATE, DELETE operations on actual tables.
+        
+        Why: Real CDC batches contain mixed operations.
+        """
+        # Arrange: Create tables
+        bronze_table = f"{test_database}.test_mixed_bronze"
+        silver_table = f"{test_database}.test_mixed_silver"
+        
+        # Initial silver data
+        initial_silver = [
+            (1, "Alice", "Addr1", "alice@email.com"),
+            (2, "Bob", "Addr2", "bob@email.com"),
+            (3, "Charlie", "Addr3", "charlie@email.com"),
+        ]
+        silver_df = spark.createDataFrame(initial_silver, customers_silver_schema)
+        silver_df.write.format("delta").mode("overwrite").saveAsTable(silver_table)
+        
+        # Mixed CDC batch
+        mixed_ts = base_timestamp + timedelta(hours=1)
+        mixed_cdc = [
+            # UPDATE Alice
+            (1, "Alice Updated", "New Addr1", "alice.new@email.com", "UPDATE", mixed_ts, None),
+            # DELETE Bob
+            (2, None, None, None, "DELETE", mixed_ts, None),
+            # INSERT Diana
+            (4, "Diana", "Addr4", "diana@email.com", "APPEND", mixed_ts, None),
+        ]
+        cdc_df = spark.createDataFrame(mixed_cdc, customers_cdc_schema)
+        cdc_df.write.format("delta").mode("overwrite").saveAsTable(bronze_table)
+        
+        try:
+            # Act: Process mixed CDC
+            raw_cdc = spark.table(bronze_table)
+            clean_cdc = apply_data_quality_expectations(raw_cdc)
+            deduped_cdc = deduplicate_by_sequence(clean_cdc)
+            
+            # Handle deletes first
+            delete_ids = [row["id"] for row in deduped_cdc.filter("operation = 'DELETE'").collect()]
+            for id_val in delete_ids:
+                table_operations.delete_from(silver_table, f"id = {id_val}")
+            
+            # Handle upserts (INSERT/UPDATE)
+            upsert_data = (deduped_cdc
+                          .filter("operation != 'DELETE'")
+                          .select("id", "name", "address", "email"))
+            
+            if upsert_data.count() > 0:
+                table_operations.merge_into(
+                    target_table=silver_table,
+                    source_df=upsert_data,
+                    match_columns=["id"],
+                    update_columns=["name", "address", "email"]
+                )
+            
+            # Assert
+            result = spark.table(silver_table)
+            assert result.count() == 3  # Alice, Charlie, Diana (Bob deleted)
+            
+            # Verify Alice updated
+            alice = result.filter("id = 1").collect()[0]
+            assert alice["name"] == "Alice Updated"
+            
+            # Verify Bob deleted
+            assert result.filter("id = 2").count() == 0
+            
+            # Verify Charlie unchanged
+            charlie = result.filter("id = 3").collect()[0]
+            assert charlie["name"] == "Charlie"
+            
+            # Verify Diana inserted
+            diana = result.filter("id = 4").collect()[0]
+            assert diana["name"] == "Diana"
+            
+        finally:
+            spark.sql(f"DROP TABLE IF EXISTS {bronze_table}")
+            spark.sql(f"DROP TABLE IF EXISTS {silver_table}")
+
+
+# ============================================================================
+# Test Class: CDF Tracking with Tables
+# ============================================================================
+
+class TestCDFTrackingWithTables:
+    """
+    Tests for Change Data Feed tracking using actual Delta tables.
+    
+    Why: CDF is essential for downstream processing and audit trails.
+    """
+    
+    def test_cdf_tracks_initial_inserts(self, spark, test_database,
+                                        customers_silver_schema,
+                                        create_delta_table_with_cdf,
+                                        table_operations, base_timestamp):
+        """
+        Test that CDF captures initial INSERT operations.
+        
+        Why: Initial data load should be tracked as inserts.
+        """
+        # Arrange: Create CDF-enabled table
+        table_name = create_delta_table_with_cdf(
+            "cdf_insert_test",
+            spark.createDataFrame([], customers_silver_schema)
+        )
+        
+        initial_version = table_operations.get_table_version(table_name)
+        
+        # Act: Insert data
+        data = [
+            (1, "Alice", "123 Main St", "alice@email.com"),
+            (2, "Bob", "456 Oak Ave", "bob@email.com"),
+        ]
+        insert_df = spark.createDataFrame(data, customers_silver_schema)
+        table_operations.insert_into(table_name, insert_df)
+        
+        # Assert: CDF shows inserts
+        cdf = table_operations.read_cdf(table_name, start_version=initial_version + 1)
+        inserts = cdf.filter("_change_type = 'insert'")
+        
+        assert inserts.count() == 2
+    
+    def test_cdf_tracks_updates_from_cdc(self, spark, test_database,
+                                         customers_cdc_schema, customers_silver_schema,
+                                         create_delta_table_with_cdf,
+                                         table_operations, base_timestamp):
+        """
+        Test that CDF captures UPDATE operations from CDC processing.
+        
+        Why: Updates should show preimage and postimage in CDF.
+        """
+        # Arrange: Create CDF-enabled table with initial data
+        initial_data = [(1, "Alice", "Old Address", "alice@email.com")]
+        initial_df = spark.createDataFrame(initial_data, customers_silver_schema)
+        table_name = create_delta_table_with_cdf("cdf_update_test", initial_df)
+        
+        initial_version = table_operations.get_table_version(table_name)
+        
+        # CDC update data
+        update_cdc = [
+            (1, "Alice", "New Address", "alice@email.com", "UPDATE", base_timestamp, None),
+        ]
+        cdc_df = spark.createDataFrame(update_cdc, customers_cdc_schema)
+        clean_cdc = apply_data_quality_expectations(cdc_df)
+        merge_data = clean_cdc.select("id", "name", "address", "email")
+        
+        # Act: Apply CDC update
+        table_operations.merge_into(
+            target_table=table_name,
+            source_df=merge_data,
+            match_columns=["id"],
+            update_columns=["name", "address", "email"]
+        )
+        
+        # Assert: CDF shows update
+        cdf = table_operations.read_cdf(table_name, start_version=initial_version + 1)
+        
+        preimage = cdf.filter("_change_type = 'update_preimage'")
+        postimage = cdf.filter("_change_type = 'update_postimage'")
+        
+        assert preimage.count() == 1
+        assert postimage.count() == 1
+        assert preimage.collect()[0]["address"] == "Old Address"
+        assert postimage.collect()[0]["address"] == "New Address"
+    
+    def test_cdf_tracks_deletes_from_cdc(self, spark, test_database,
+                                         customers_cdc_schema, customers_silver_schema,
+                                         create_delta_table_with_cdf,
+                                         table_operations, base_timestamp):
+        """
+        Test that CDF captures DELETE operations from CDC processing.
+        
+        Why: Deletes should be recorded in CDF for audit trail.
+        """
+        # Arrange: Create CDF-enabled table with data
+        initial_data = [
+            (1, "Alice", "Addr1", "alice@email.com"),
+            (2, "Bob", "Addr2", "bob@email.com"),
+        ]
+        initial_df = spark.createDataFrame(initial_data, customers_silver_schema)
+        table_name = create_delta_table_with_cdf("cdf_delete_test", initial_df)
+        
+        initial_version = table_operations.get_table_version(table_name)
+        
+        # Act: Process delete CDC
+        table_operations.delete_from(table_name, "id = 2")
+        
+        # Assert: CDF shows delete
+        cdf = table_operations.read_cdf(table_name, start_version=initial_version + 1)
+        deletes = cdf.filter("_change_type = 'delete'")
+        
+        assert deletes.count() == 1
+        assert deletes.collect()[0]["name"] == "Bob"
+
+
+# ============================================================================
+# Test Class: Full Pipeline with Tables
+# ============================================================================
+
+class TestFullPipelineWithTables:
+    """
+    End-to-end pipeline tests using actual Delta tables.
+    
+    Why: Validates complete CDC pipeline flow from bronze to silver with
+    real Delta table operations and CDF tracking.
+    """
+    
+    def test_complete_pipeline_with_tables(self, spark, test_database,
+                                           customers_cdc_schema, customers_silver_schema,
+                                           create_delta_table_with_cdf,
+                                           table_operations, base_timestamp):
+        """
+        Test complete CDC pipeline flow with actual tables.
+        
+        Simulates:
+        1. Load raw CDC to bronze table
+        2. Apply quality expectations
+        3. Deduplicate
+        4. Merge to silver table
+        5. Verify CDF tracking
+        """
+        # Setup tables
+        bronze_table = f"{test_database}.pipeline_bronze"
+        empty_bronze = spark.createDataFrame([], customers_cdc_schema)
+        empty_bronze.write.format("delta").mode("overwrite").saveAsTable(bronze_table)
+        
+        # Silver with CDF enabled
+        silver_table = create_delta_table_with_cdf(
+            "pipeline_silver",
+            spark.createDataFrame([], customers_silver_schema)
+        )
+        
+        try:
+            # === Batch 1: Initial Load ===
+            batch1_data = [
+                (1, "Alice", "Addr1", "alice@email.com", "APPEND", base_timestamp, None),
+                (2, "Bob", "Addr2", "bob@email.com", "APPEND", base_timestamp, None),
+                (3, "Charlie", "Addr3", "charlie@email.com", "APPEND", base_timestamp, None),
+            ]
+            batch1_df = spark.createDataFrame(batch1_data, customers_cdc_schema)
+            batch1_df.write.format("delta").mode("append").saveAsTable(bronze_table)
+            
+            # Process batch 1
+            raw = spark.table(bronze_table)
+            clean = apply_data_quality_expectations(raw)
+            deduped = deduplicate_by_sequence(clean)
+            merge_data = deduped.select("id", "name", "address", "email")
+            
+            table_operations.merge_into(
+                target_table=silver_table,
+                source_df=merge_data,
+                match_columns=["id"],
+                update_columns=["name", "address", "email"]
+            )
+            
+            assert spark.table(silver_table).count() == 3
+            
+            # === Batch 2: Updates ===
+            batch2_ts = base_timestamp + timedelta(hours=1)
+            batch2_data = [
+                (1, "Alice Updated", "New Addr1", "alice.new@email.com", "UPDATE", batch2_ts, None),
+            ]
+            batch2_df = spark.createDataFrame(batch2_data, customers_cdc_schema)
+            batch2_df.write.format("delta").mode("append").saveAsTable(bronze_table)
+            
+            # Process only new records (filter by timestamp)
+            raw2 = spark.table(bronze_table).filter(col("operation_date") >= batch2_ts)
+            clean2 = apply_data_quality_expectations(raw2)
+            deduped2 = deduplicate_by_sequence(clean2)
+            merge_data2 = deduped2.select("id", "name", "address", "email")
+            
+            table_operations.merge_into(
+                target_table=silver_table,
+                source_df=merge_data2,
+                match_columns=["id"],
+                update_columns=["name", "address", "email"]
+            )
+            
+            alice = spark.table(silver_table).filter("id = 1").collect()[0]
+            assert alice["name"] == "Alice Updated"
+            
+            # === Batch 3: Deletes ===
+            batch3_ts = base_timestamp + timedelta(hours=2)
+            batch3_data = [
+                (2, None, None, None, "DELETE", batch3_ts, None),
+            ]
+            batch3_df = spark.createDataFrame(batch3_data, customers_cdc_schema)
+            batch3_df.write.format("delta").mode("append").saveAsTable(bronze_table)
+            
+            # Process deletes
+            raw3 = spark.table(bronze_table).filter(col("operation_date") >= batch3_ts)
+            clean3 = apply_data_quality_expectations(raw3)
+            delete_ids = [row["id"] for row in clean3.filter("operation = 'DELETE'").collect()]
+            
+            for id_val in delete_ids:
+                table_operations.delete_from(silver_table, f"id = {id_val}")
+            
+            # Final assertions
+            final_silver = spark.table(silver_table)
+            assert final_silver.count() == 2
+            assert final_silver.filter("id = 2").count() == 0
+            
+            # Verify CDF captured everything
+            cdf = table_operations.read_cdf(silver_table, start_version=0)
+            
+            assert cdf.filter("_change_type = 'insert'").count() == 3
+            assert cdf.filter("_change_type = 'update_postimage'").count() == 1
+            assert cdf.filter("_change_type = 'delete'").count() == 1
+            
+        finally:
+            spark.sql(f"DROP TABLE IF EXISTS {bronze_table}")
+    
+    def test_incremental_processing_with_tables(self, spark, test_database,
+                                                customers_cdc_schema, customers_silver_schema,
+                                                create_delta_table_with_cdf,
+                                                table_operations, base_timestamp):
+        """
+        Test incremental batch processing with actual tables.
+        
+        Why: Real pipelines process data in incremental batches.
+        """
+        # Setup
+        bronze_table = f"{test_database}.incremental_bronze"
+        empty_bronze = spark.createDataFrame([], customers_cdc_schema)
+        empty_bronze.write.format("delta").mode("overwrite").saveAsTable(bronze_table)
+        
+        silver_table = create_delta_table_with_cdf(
+            "incremental_silver",
+            spark.createDataFrame([], customers_silver_schema)
+        )
+        
+        try:
+            processed_timestamp = base_timestamp
+            total_expected = 0
+            
+            # Process 5 batches
+            for batch_num in range(5):
+                batch_ts = base_timestamp + timedelta(hours=batch_num)
+                records_in_batch = 3
+                
+                # Generate batch data
+                batch_data = [
+                    (batch_num * records_in_batch + i,
+                     f"Customer_{batch_num}_{i}",
+                     f"Address_{batch_num}_{i}",
+                     f"c{batch_num}_{i}@email.com",
+                     "APPEND", batch_ts, None)
+                    for i in range(records_in_batch)
+                ]
+                batch_df = spark.createDataFrame(batch_data, customers_cdc_schema)
+                batch_df.write.format("delta").mode("append").saveAsTable(bronze_table)
+                
+                # Process only new records
+                new_records = spark.table(bronze_table).filter(col("operation_date") >= batch_ts)
+                clean = apply_data_quality_expectations(new_records)
+                deduped = deduplicate_by_sequence(clean)
+                merge_data = deduped.select("id", "name", "address", "email")
+                
+                table_operations.merge_into(
+                    target_table=silver_table,
+                    source_df=merge_data,
+                    match_columns=["id"],
+                    update_columns=["name", "address", "email"]
+                )
+                
+                total_expected += records_in_batch
+                
+                # Verify incremental count
+                assert spark.table(silver_table).count() == total_expected
+            
+            # Final verification
+            assert spark.table(silver_table).count() == 15  # 5 batches * 3 records
+            
+        finally:
+            spark.sql(f"DROP TABLE IF EXISTS {bronze_table}")
+
