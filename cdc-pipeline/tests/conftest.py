@@ -4,39 +4,12 @@ These fixtures provide mock data and Spark session setup for testing.
 """
 
 import pytest
-from pyspark.sql import SparkSession
 from pyspark.sql.types import (
     StructType, StructField, StringType, LongType, TimestampType, IntegerType
 )
 from datetime import datetime, timedelta
 from delta.tables import DeltaTable
 import os
-
-
-# ============================================================================
-# Spark Session Fixtures
-# ============================================================================
-
-@pytest.fixture(scope="session")
-def spark():
-    """
-    Create or get existing SparkSession for testing.
-    In Databricks notebook context, this returns the existing session.
-    """
-    try:
-        # Try to get existing Databricks spark session
-        from pyspark.sql import SparkSession
-        existing_spark = SparkSession.builder.getOrCreate()
-        return existing_spark
-    except Exception:
-        # Fallback for local testing
-        return (SparkSession.builder
-                .appName("CDC_Pipeline_Tests")
-                .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-                .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-                .config("spark.sql.warehouse.dir", "/tmp/spark-warehouse")
-                .master("local[*]")
-                .getOrCreate())
 
 
 @pytest.fixture(scope="session")
