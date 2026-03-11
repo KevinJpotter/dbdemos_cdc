@@ -12,6 +12,7 @@ variables:
   schema:
     default: kevin_potter
 
+
 # Deployment targets (environments)
 targets:
   dev:
