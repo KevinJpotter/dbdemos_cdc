@@ -18,8 +18,8 @@ jobs:
     name: "Validate bundle"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: pip install dbx_test
@@ -35,7 +35,7 @@ jobs:
     needs:
       - validate
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: databricks/setup-cli@main
       - run: databricks bundle deploy
         working-directory: .
@@ -48,7 +48,7 @@ jobs:
     needs:
       - deploy
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: databricks/setup-cli@main
       - run: databricks bundle run python_cdc_flow --refresh-all
         working-directory: .
