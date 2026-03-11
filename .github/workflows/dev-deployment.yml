@@ -25,7 +25,7 @@ jobs:
       - run: pip install dbx_test
       - uses: databricks/setup-cli@main
       - run: databricks bundle validate
-        working-directory: .
+        working-directory: declarative-pipeline-cdc
         env:
           DATABRICKS_BUNDLE_ENV: dev
 
@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: databricks/setup-cli@main
       - run: databricks bundle deploy
-        working-directory: .
+        working-directory: declarative-pipeline-cdc
         env:
           DATABRICKS_BUNDLE_ENV: dev
 
@@ -51,6 +51,6 @@ jobs:
       - uses: actions/checkout@v5
       - uses: databricks/setup-cli@main
       - run: databricks bundle run python_cdc_flow --refresh-all
-        working-directory: .
+        working-directory: declarative-pipeline-cdc
         env:
           DATABRICKS_BUNDLE_ENV: dev
