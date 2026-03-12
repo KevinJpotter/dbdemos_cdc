@@ -12,15 +12,6 @@ on:
     branches:
       - staging
 
-permissions:
-  id-token: write
-  contents: read
-
-env:
-  DATABRICKS_AUTH_TYPE: github-oidc
-  DATABRICKS_HOST: https://e2-demo-field-eng.cloud.databricks.com/
-  DATABRICKS_CLIENT_ID: 6569b63a-e0b1-4108-a20e-e4118430229e
-
 jobs:
   validate:
     name: "Validate bundle"
