@@ -6,7 +6,7 @@ resources:
     python_cdc_flow:
       name: python_cdc_flow
       catalog: ${var.catalog}
-      target: ${var.schema}
+      target: ${resources.schemas.kevin_potter.name}
       continuous: false
       development: false
       photon: true
@@ -15,7 +15,7 @@ resources:
       # Configuration passed to pipeline (spark.conf.get in python_cdc.ipynb)
       configuration:
         catalog: ${var.catalog}
-        schema: ${var.schema}
+        schema: ${resources.schemas.kevin_potter.name}
       # Source code - transformations folder (python_cdc.ipynb, etc.)
       libraries:
         - notebook:

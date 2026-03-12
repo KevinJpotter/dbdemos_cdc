@@ -5,6 +5,6 @@ resources:
   volumes:
     raw_data:
       catalog_name: ${var.catalog}
-      schema_name: ${var.schema}
+      schema_name: ${resources.schemas.kevin_potter.name}
       name: raw_data
       volume_type: MANAGED
