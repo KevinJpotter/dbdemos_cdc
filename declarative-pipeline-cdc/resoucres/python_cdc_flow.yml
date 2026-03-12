@@ -18,5 +18,5 @@ resources:
         schema: ${var.schema}
       # Source code - transformations folder (python_cdc.ipynb, etc.)
       libraries:
-        - glob:
-            include: transformations/**
+        - notebook:
+            path: ${workspace.file_path}/transformations/python_cdc.ipynb
