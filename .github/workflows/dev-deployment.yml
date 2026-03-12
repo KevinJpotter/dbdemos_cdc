@@ -15,6 +15,7 @@ on:
 env:
   DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
   DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+  VENV_PATH: actions-runner-venv/bin/activate
 
 jobs:
   validate:
@@ -22,10 +23,7 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-      - run: pip install dbx_test
+      - run: source $VENV_PATH
       - uses: databricks/setup-cli@main
       - run: databricks bundle validate
         working-directory: declarative-pipeline-cdc
@@ -39,6 +37,7 @@ jobs:
       - validate
     steps:
       - uses: actions/checkout@v5
+      - run: source $VENV_PATH
       - uses: databricks/setup-cli@main
       - run: databricks bundle deploy
         working-directory: declarative-pipeline-cdc
@@ -52,6 +51,7 @@ jobs:
       - deploy
     steps:
       - uses: actions/checkout@v5
+      - run: source $VENV_PATH
       - uses: databricks/setup-cli@main
       - run: databricks bundle run python_cdc_flow --refresh-all
         working-directory: declarative-pipeline-cdc
