@@ -1,0 +1,60 @@
+# Databricks Asset Bundle Configuration
+# https://docs.databricks.com/dev-tools/bundles/
+
+bundle:
+  name: declarative-pipeline-cdc
+  # databricks_cli_version: "0.208.0"  # Optional: pin CLI version
+
+# Variables available across the bundle (use ${var.catalog}, ${var.schema})
+variables:
+  catalog:
+    default: serverless_stable_az5k2q_catalog
+  schema:
+    default: kevin_potter
+
+
+# Deployment targets (environments)
+targets:
+  dev:
+    default: true
+    workspace:
+      host: https://fevm-serverless-stable-az5k2q.cloud.databricks.com/
+      root_path: /Workspace/Users/${workspace.current_user.userName}/declarative-pipeline-cdc
+
+  staging:
+    workspace:
+      host: https://fevm-serverless-stable-az5k2q.cloud.databricks.com/
+      root_path: /Workspace/deployments/staging/declarative-pipeline-cdc
+
+  test:
+    mode: development
+    workspace:
+      host: https://fevm-serverless-stable-az5k2q.cloud.databricks.com/
+      root_path: /Workspace/deployments/test/declarative-pipeline-cdc
+    presets:
+      name_prefix: "test_"
+
+  prod:
+    workspace:
+      host: https://fevm-serverless-stable-az5k2q.cloud.databricks.com/
+      root_path: /Workspace/deployments/prod/declarative-pipeline-cdc
+
+
+
+# Sync files to workspace
+sync:
+  include:
+    - transformations/**/*.py
+    - transformations/**/*.sql
+    - transformations/**/*.ipynb
+    - tests/**/*.ipynb
+    - tests/**/*.py
+    - config/**/*.yml
+  exclude:
+    - "*.pyc"
+    - "__pycache__"
+    - ".dbx-test-results"
+
+# Include pipeline/job definitions
+include:
+  - resoucres/*.yml

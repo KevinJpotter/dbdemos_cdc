@@ -1,0 +1,22 @@
+# Python CDC Pipeline - Databricks Asset Bundle resource
+# Defines the DLT pipeline from transformations/python_cdc.ipynb
+
+resources:
+  pipelines:
+    python_cdc_flow:
+      name: python_cdc_flow
+      catalog: ${var.catalog}
+      target: ${var.schema}
+      continuous: false
+      development: false
+      photon: true
+      channel: CURRENT
+      serverless: true
+      # Configuration passed to pipeline (spark.conf.get in python_cdc.ipynb)
+      configuration:
+        catalog: ${var.catalog}
+        schema: ${var.schema}
+      # Source code - transformations folder (python_cdc.ipynb, etc.)
+      libraries:
+        - notebook:
+            path: ${workspace.file_path}/transformations/python_cdc.ipynb
