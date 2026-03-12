@@ -5,4 +5,4 @@ resources:
   schemas:
     kevin_potter:
       catalog_name: ${var.catalog}
-      name: ${var.schema}
+      name: ${bundle.target}_${var.schema}
