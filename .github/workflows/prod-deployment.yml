@@ -17,7 +17,7 @@ env:
 jobs:
   deploy:
     name: "Deploy bundle"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -32,7 +32,7 @@ jobs:
 
   run_pipeline:
     name: "Run pipeline update"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs:
       - deploy
     steps:
