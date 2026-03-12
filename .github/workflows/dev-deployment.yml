@@ -28,7 +28,7 @@ jobs:
       - run: databricks bundle validate
         working-directory: declarative-pipeline-cdc
         env:
-          DATABRICKS_BUNDLE_ENV: dev
+          DATABRICKS_BUNDLE_ENV: staging
 
   deploy:
     name: "Deploy bundle"
@@ -42,7 +42,7 @@ jobs:
       - run: databricks bundle deploy
         working-directory: declarative-pipeline-cdc
         env:
-          DATABRICKS_BUNDLE_ENV: dev
+          DATABRICKS_BUNDLE_ENV: staging
 
   run_pipeline:
     name: "Run pipeline update"
@@ -56,4 +56,4 @@ jobs:
       - run: databricks bundle run python_cdc_flow --refresh-all
         working-directory: declarative-pipeline-cdc
         env:
-          DATABRICKS_BUNDLE_ENV: dev
+          DATABRICKS_BUNDLE_ENV: staging
