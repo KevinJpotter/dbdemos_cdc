@@ -15,7 +15,7 @@ on:
 env:
   DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
   DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-  VENV_PATH: actions-runner-venv/bin/activate
+  VENV_PATH: /Users/kevin.potter/Desktop/dbdemos_cdc/actions-runner-venv/bin/activate
 
 jobs:
   validate:
