@@ -18,25 +18,25 @@ targets:
   dev:
     default: true
     workspace:
-      host: https://e2-demo-field-eng.cloud.databricks.com/
+      host: https://fevm-serverless-stable-az5k2q.cloud.databricks.com/
       # root_path: /Workspace/Users/${var.user}/declarative-pipeline-cdc
 
   staging:
     workspace:
-      host: https://e2-demo-field-eng.cloud.databricks.com/
+      host: https://fevm-serverless-stable-az5k2q.cloud.databricks.com/
       # root_path: /Workspace/staging/declarative-pipeline-cdc
 
   test:
     mode: development
     workspace:
-      host: https://e2-demo-field-eng.cloud.databricks.com/
+      host: https://fevm-serverless-stable-az5k2q.cloud.databricks.com/
       # root_path: /Workspace/test/declarative-pipeline-cdc
     presets:
       name_prefix: "test_"
 
   prod:
     workspace:
-      host: https://e2-demo-field-eng.cloud.databricks.com/
+      host: https://fevm-serverless-stable-az5k2q.cloud.databricks.com/
       # root_path: /Workspace/production/declarative-pipeline-cdc
 
 
