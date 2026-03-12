@@ -1,0 +1,8 @@
+# Schema - Databricks Asset Bundle resource
+# Managed Unity Catalog schema
+
+resources:
+  schemas:
+    kevin_potter:
+      catalog_name: ${var.catalog}
+      name: ${var.schema}
