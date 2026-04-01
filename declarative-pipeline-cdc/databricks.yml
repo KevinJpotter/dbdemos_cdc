@@ -55,6 +55,7 @@ sync:
     - "*.pyc"
     - "__pycache__"
     - ".dbx-test-results"
+    - "archive"
 
 # Include pipeline/job definitions
 include:
