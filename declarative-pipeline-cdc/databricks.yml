@@ -48,7 +48,6 @@ sync:
     - transformations/**/*.sql
     - transformations/**/*.ipynb
     - tests/**/*.ipynb
-    - tests/**/*.py
     - config/**/*.yml
   exclude:
     - "*.pyc"
