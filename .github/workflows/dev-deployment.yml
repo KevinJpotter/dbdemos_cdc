@@ -44,11 +44,25 @@ jobs:
         env:
           DATABRICKS_BUNDLE_ENV: staging
 
+  seed_data:
+    name: "Seed raw data"
+    runs-on: self-hosted
+    needs:
+      - deploy
+    steps:
+      - uses: actions/checkout@v5
+      - run: source $VENV_PATH
+      - uses: databricks/setup-cli@main
+      - run: databricks bundle run data_generator
+        working-directory: declarative-pipeline-cdc
+        env:
+          DATABRICKS_BUNDLE_ENV: staging
+
   run_pipeline:
     name: "Run pipeline update"
     runs-on: self-hosted
     needs:
-      - deploy
+      - seed_data
     steps:
       - uses: actions/checkout@v5
       - run: source $VENV_PATH

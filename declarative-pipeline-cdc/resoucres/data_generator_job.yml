@@ -1,0 +1,21 @@
+# Data Generator Job - Databricks Asset Bundle resource
+# Runs the CDC data generator notebook to seed raw_data volume
+
+resources:
+  jobs:
+    data_generator:
+      name: data_generator
+      tasks:
+        - task_key: generate_cdc_data
+          notebook_task:
+            notebook_path: ${workspace.file_path}/_resources/00-Data_CDC_Generator
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${resources.schemas.kevin_potter.name}
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"
+            dependencies:
+              - Faker

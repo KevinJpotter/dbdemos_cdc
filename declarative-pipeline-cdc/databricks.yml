@@ -47,6 +47,7 @@ sync:
     - transformations/**/*.py
     - transformations/**/*.sql
     - transformations/**/*.ipynb
+    - _resources/**/*.ipynb
     - tests/**/*.ipynb
     - tests/**/*.py
     - config/**/*.yml
