@@ -75,6 +75,8 @@ jobs:
         working-directory: declarative-pipeline-cdc
         env:
           DATABRICKS_BUNDLE_ENV: staging
+          DATABRICKS_HTTP_TIMEOUT: "600"
+          DATABRICKS_RETRY_TIMEOUT: "900"
 
   run_tests:
     name: "Run unit tests"
