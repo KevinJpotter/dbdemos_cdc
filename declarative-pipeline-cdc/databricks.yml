@@ -58,4 +58,4 @@ sync:
 
 # Include pipeline/job definitions
 include:
-  - resoucres/*.yml
+  - resources/*.yml
