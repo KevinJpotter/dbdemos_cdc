@@ -1,8 +1,9 @@
 # Databricks Notebook Test Framework Configuration
 
 workspace:
-  # Databricks CLI profile to use (can be overridden with --profile flag)
-  profile: "default"
+  # Authentication via DATABRICKS_HOST and DATABRICKS_TOKEN env vars.
+  # Uncomment to use a CLI profile instead:
+  # profile: "default"
 
 cluster:
   # Libraries to install for remote execution
