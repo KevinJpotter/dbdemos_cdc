@@ -26,7 +26,7 @@ cluster:
 execution:
   timeout: 600  # Timeout in seconds (10 minutes)
   max_retries: 2
-  parallel: false  # Enable parallel execution for multiple tests
+  parallel: true  # Enable parallel execution for multiple tests
   # max_parallel_jobs: 5  # Maximum number of parallel jobs (default: 5)
 
 reporting:

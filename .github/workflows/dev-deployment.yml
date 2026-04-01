@@ -12,6 +12,10 @@ on:
     branches:
       - staging
 
+permissions:
+  contents: read
+  checks: write
+
 env:
   DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
   DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -71,3 +75,42 @@ jobs:
         working-directory: declarative-pipeline-cdc
         env:
           DATABRICKS_BUNDLE_ENV: staging
+
+  run_tests:
+    name: "Run unit tests"
+    runs-on: self-hosted
+    needs:
+      - run_pipeline
+    steps:
+      - uses: actions/checkout@v5
+      - run: source $VENV_PATH
+      - uses: databricks/setup-cli@main
+      - name: Install dbx_test
+        run: |
+          source $VENV_PATH
+          pip install dbx_test
+      - name: Run notebook tests
+        run: |
+          source $VENV_PATH
+          cd declarative-pipeline-cdc
+          dbx_test run \
+            --config config/test_config.yml \
+            --target staging \
+            --output-format junit,console,json \
+            --output-dir .dbx-test-results
+        env:
+          DATABRICKS_BUNDLE_ENV: staging
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbx-test-results
+          path: declarative-pipeline-cdc/.dbx-test-results/
+      - name: Test Report
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: "CDC Pipeline Test Results"
+          path: "declarative-pipeline-cdc/.dbx-test-results/**/junit*.xml"
+          reporter: java-junit
+          fail-on-error: true
