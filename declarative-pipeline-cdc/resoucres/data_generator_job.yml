@@ -8,7 +8,7 @@ resources:
       tasks:
         - task_key: generate_cdc_data
           notebook_task:
-            notebook_path: ${workspace.file_path}/_resources/00-Data_CDC_Generator
+            notebook_path: ${workspace.file_path}/tests/00-Data_CDC_Generator
             base_parameters:
               catalog: ${var.catalog}
               schema: ${resources.schemas.kevin_potter.name}
