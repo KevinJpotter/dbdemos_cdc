@@ -113,9 +113,9 @@ jobs:
           from xml.etree.ElementTree import Element, SubElement, ElementTree
 
           results_dir = 'declarative-pipeline-cdc/.dbx-test-results'
-          results_files = sorted(glob.glob(f'{results_dir}/**/results.json', recursive=True))
+          results_files = sorted(glob.glob(f'{results_dir}/**/*.json', recursive=True))
           if not results_files:
-              print('No results.json found')
+              print('No JSON results found')
               sys.exit(1)
 
           results_file = results_files[-1]
@@ -152,7 +152,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dbx-test-results
-          path: declarative-pipeline-cdc/.dbx-test-results/
+          path: declarative-pipeline-cdc/.dbx-test-results/**/*
       - name: Test Report
         if: always() && steps.run_tests.outcome != 'cancelled'
         uses: dorny/test-reporter@v1
