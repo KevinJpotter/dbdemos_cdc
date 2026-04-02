@@ -105,17 +105,13 @@ jobs:
             --output-dir .dbx-test-results
         env:
           DATABRICKS_BUNDLE_ENV: staging
-      - name: Convert results to JUnit XML
+      - name: Fetch notebook output and convert to JUnit XML
         if: always() && steps.run_tests.outcome != 'cancelled'
         run: |
           source $VENV_PATH
           python3 << 'PYEOF'
-          import json, glob, os, sys, requests
+          import json, glob, os, sys, subprocess
           from xml.etree.ElementTree import Element, SubElement, ElementTree
-
-          host = os.environ["DATABRICKS_HOST"].rstrip("/")
-          token = os.environ["DATABRICKS_TOKEN"]
-          headers = {"Authorization": f"Bearer {token}"}
 
           results_dir = "declarative-pipeline-cdc/.dbx-test-results"
           results_files = sorted(glob.glob(f"{results_dir}/**/*.json", recursive=True))
@@ -128,31 +124,52 @@ jobs:
           with open(results_file) as f:
               data = json.load(f)
 
-          # Fetch notebook exit output from each run and expand into granular tests
           all_tests = []
           for nb_test in data["tests"]:
               run_id = nb_test.get("run_id")
               notebook_name = nb_test["notebook"].split("/")[-1]
               if run_id:
                   try:
-                      resp = requests.get(
-                          f"{host}/api/2.1/jobs/runs/get-output",
-                          headers=headers,
-                          params={"run_id": run_id},
-                      )
-                      resp.raise_for_status()
-                      output = resp.json()
-                      exit_value = output.get("notebook_output", {}).get("result", "")
-                      if exit_value:
-                          nb_results = json.loads(exit_value)
-                          for t in nb_results.get("tests", []):
-                              t["notebook"] = notebook_name
-                              all_tests.append(t)
-                          print(f"  {notebook_name}: {len(nb_results.get('tests', []))} tests from notebook output")
-                          continue
+                      result = subprocess.run(
+                          ["databricks", "runs", "get-output", "--run-id", str(run_id)],
+                          capture_output=True, text=True, timeout=30)
+                      if result.returncode == 0:
+                          output = json.loads(result.stdout)
+                          exit_value = output.get("notebook_output", {}).get("result", "")
+                          if exit_value:
+                              nb_results = json.loads(exit_value)
+                              for t in nb_results.get("tests", []):
+                                  t["notebook"] = notebook_name
+                                  all_tests.append(t)
+                              print(f"  {notebook_name}: {len(nb_results.get('tests', []))} tests expanded")
+                              continue
+                      # Try fetching child task runs if parent run
+                      result2 = subprocess.run(
+                          ["databricks", "runs", "get", "--run-id", str(run_id)],
+                          capture_output=True, text=True, timeout=30)
+                      if result2.returncode == 0:
+                          run_info = json.loads(result2.stdout)
+                          for task in run_info.get("tasks", []):
+                              task_run_id = task.get("run_id")
+                              if not task_run_id:
+                                  continue
+                              task_result = subprocess.run(
+                                  ["databricks", "runs", "get-output", "--run-id", str(task_run_id)],
+                                  capture_output=True, text=True, timeout=30)
+                              if task_result.returncode == 0:
+                                  task_output = json.loads(task_result.stdout)
+                                  exit_value = task_output.get("notebook_output", {}).get("result", "")
+                                  if exit_value:
+                                      nb_results = json.loads(exit_value)
+                                      for t in nb_results.get("tests", []):
+                                          t["notebook"] = notebook_name
+                                          all_tests.append(t)
+                                      print(f"  {notebook_name}: {len(nb_results.get('tests', []))} tests expanded (via task)")
+                                      break
+                          if all_tests and all_tests[-1]["notebook"] == notebook_name:
+                              continue
                   except Exception as e:
-                      print(f"  Warning: could not fetch output for run {run_id}: {e}")
-              # Fallback: use the dbx_test summary entry
+                      print(f"  Warning: could not fetch output for {notebook_name} run {run_id}: {e}")
               all_tests.append({
                   "notebook": notebook_name,
                   "test_name": nb_test["test_name"],
@@ -161,7 +178,6 @@ jobs:
                   "error_message": nb_test.get("error_message", ""),
               })
 
-          # Build JUnit XML
           total = len(all_tests)
           failed = sum(1 for t in all_tests if t["status"] == "failed")
           errors = sum(1 for t in all_tests if t["status"] == "error")
