@@ -20,6 +20,7 @@ env:
   DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
   DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
   VENV_PATH: /Users/kevin.potter/actions-runner-venv/bin/activate
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   validate:
@@ -155,7 +156,7 @@ jobs:
           path: declarative-pipeline-cdc/.dbx-test-results/**/*
       - name: Test Report
         if: always() && steps.run_tests.outcome != 'cancelled'
-        uses: dorny/test-reporter@v2
+        uses: dorny/test-reporter@v1
         with:
           name: "CDC Pipeline Test Results"
           path: "declarative-pipeline-cdc/.dbx-test-results/**/junit-results.xml"
