@@ -149,13 +149,13 @@ jobs:
           "
       - name: Upload test results
         if: always() && steps.run_tests.outcome != 'cancelled'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: dbx-test-results
           path: declarative-pipeline-cdc/.dbx-test-results/**/*
       - name: Test Report
         if: always() && steps.run_tests.outcome != 'cancelled'
-        uses: dorny/test-reporter@v1
+        uses: dorny/test-reporter@v2
         with:
           name: "CDC Pipeline Test Results"
           path: "declarative-pipeline-cdc/.dbx-test-results/**/junit-results.xml"
