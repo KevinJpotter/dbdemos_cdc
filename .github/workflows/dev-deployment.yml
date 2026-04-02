@@ -125,12 +125,13 @@ jobs:
               data = json.load(f)
 
           testsuites = Element("testsuites")
+          suite = SubElement(testsuites, "testsuite", name="dbx_test")
           total = failed = errors = 0
 
           for test in data["tests"]:
               notebook_name = test["notebook"].split("/")[-1]
               total += 1
-              tc = SubElement(testsuites, "testcase",
+              tc = SubElement(suite, "testcase",
                   classname=notebook_name,
                   name=test["test_name"],
                   time=str(test.get("duration", 0)))
@@ -143,9 +144,9 @@ jobs:
                   SubElement(tc, "error",
                       message=test.get("error_message", "")).text = test.get("error_message", "")
 
-          testsuites.set("tests", str(total))
-          testsuites.set("failures", str(failed))
-          testsuites.set("errors", str(errors))
+          suite.set("tests", str(total))
+          suite.set("failures", str(failed))
+          suite.set("errors", str(errors))
 
           out_path = os.path.join(os.path.dirname(results_file), "junit-results.xml")
           ElementTree(testsuites).write(out_path, encoding="unicode", xml_declaration=True)
