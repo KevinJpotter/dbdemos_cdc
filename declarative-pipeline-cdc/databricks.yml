@@ -1,5 +1,6 @@
 # Databricks Asset Bundle Configuration
 # https://docs.databricks.com/dev-tools/bundles/
+# Workspace: fevm-serverless-stable-3ga4py
 
 bundle:
   name: declarative-pipeline-cdc
