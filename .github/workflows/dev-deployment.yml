@@ -120,3 +120,18 @@ jobs:
           path: "declarative-pipeline-cdc/.dbx-test-results/**/report.xml"
           reporter: java-junit
           fail-on-error: true
+
+  destroy:
+    name: "Destroy bundle"
+    runs-on: self-hosted
+    needs:
+      - run_tests
+    if: always()
+    steps:
+      - uses: actions/checkout@v5
+      - run: source $VENV_PATH
+      - uses: databricks/setup-cli@main
+      - run: databricks bundle destroy --auto-approve
+        working-directory: declarative-pipeline-cdc
+        env:
+          DATABRICKS_BUNDLE_ENV: staging
