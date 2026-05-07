@@ -113,7 +113,7 @@ jobs:
           name: dbx-test-results
           path: declarative-pipeline-cdc/.dbx-test-results/**/*
       - name: Test Report
-        if: always() && steps.run_tests.outcome != 'cancelled'
+        if: always() && steps.run_tests.outcome == 'success'
         uses: dorny/test-reporter@v1
         with:
           name: "CDC Pipeline Test Results"
