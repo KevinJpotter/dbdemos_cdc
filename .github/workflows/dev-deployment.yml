@@ -17,8 +17,7 @@ permissions:
   checks: write
 
 env:
-  DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
-  DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+  DATABRICKS_CONFIG_PROFILE: fe-vm-serverless-stable-3ga4py
   VENV_PATH: /Users/kevin.potter/actions-runner-venv/bin/activate
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -100,6 +99,7 @@ jobs:
           dbx_test run \
             --config config/test_config.yml \
             --target staging \
+            --profile fe-vm-serverless-stable-3ga4py \
             --output-format console \
             --output-format json \
             --output-format junit \
