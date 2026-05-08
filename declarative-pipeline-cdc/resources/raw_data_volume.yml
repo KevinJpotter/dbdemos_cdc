@@ -1,0 +1,10 @@
+# Raw Data Volume - Databricks Asset Bundle resource
+# Managed Unity Catalog volume for raw CDC data
+
+resources:
+  volumes:
+    raw_data:
+      catalog_name: ${var.catalog}
+      schema_name: ${resources.schemas.kevin_potter.name}
+      name: raw_data
+      volume_type: MANAGED

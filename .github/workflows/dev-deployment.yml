@@ -12,10 +12,14 @@ on:
     branches:
       - staging
 
+permissions:
+  contents: read
+  checks: write
+
 env:
-  DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
-  DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+  DATABRICKS_CONFIG_PROFILE: fe-vm-serverless-stable-3ga4py
   VENV_PATH: /Users/kevin.potter/actions-runner-venv/bin/activate
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   validate:
@@ -44,8 +48,8 @@ jobs:
         env:
           DATABRICKS_BUNDLE_ENV: staging
 
-  run_pipeline:
-    name: "Run pipeline update"
+  seed_data:
+    name: "Seed raw data"
     runs-on: self-hosted
     needs:
       - deploy
@@ -53,7 +57,81 @@ jobs:
       - uses: actions/checkout@v5
       - run: source $VENV_PATH
       - uses: databricks/setup-cli@main
+      - run: databricks bundle run data_generator
+        working-directory: declarative-pipeline-cdc
+        env:
+          DATABRICKS_BUNDLE_ENV: staging
+
+  run_pipeline:
+    name: "Run pipeline update"
+    runs-on: self-hosted
+    needs:
+      - seed_data
+    steps:
+      - uses: actions/checkout@v5
+      - run: source $VENV_PATH
+      - uses: databricks/setup-cli@main
       - run: databricks bundle run python_cdc_flow --refresh-all
+        working-directory: declarative-pipeline-cdc
+        env:
+          DATABRICKS_BUNDLE_ENV: staging
+          DATABRICKS_HTTP_TIMEOUT: "600"
+          DATABRICKS_RETRY_TIMEOUT: "900"
+
+  run_tests:
+    name: "Run unit tests"
+    runs-on: self-hosted
+    needs:
+      - run_pipeline
+    steps:
+      - uses: actions/checkout@v5
+      - run: source $VENV_PATH
+      - uses: databricks/setup-cli@main
+      - name: Install dbx_test
+        run: |
+          source $VENV_PATH
+          pip install dbx_test
+      - name: Run notebook tests
+        id: run_tests
+        run: |
+          source $VENV_PATH
+          cd declarative-pipeline-cdc
+          dbx_test run \
+            --config config/test_config.yml \
+            --target staging \
+            --profile fe-vm-serverless-stable-3ga4py \
+            --output-format console \
+            --output-format json \
+            --output-format junit \
+            --output-dir .dbx-test-results
+        env:
+          DATABRICKS_BUNDLE_ENV: staging
+      - name: Upload test results
+        if: always() && steps.run_tests.outcome != 'cancelled'
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: dbx-test-results
+          path: declarative-pipeline-cdc/.dbx-test-results/**/*
+      - name: Test Report
+        if: always() && steps.run_tests.outcome == 'success'
+        uses: dorny/test-reporter@v1
+        with:
+          name: "CDC Pipeline Test Results"
+          path: "declarative-pipeline-cdc/.dbx-test-results/**/report.xml"
+          reporter: java-junit
+          fail-on-error: true
+
+  destroy:
+    name: "Destroy bundle"
+    runs-on: self-hosted
+    needs:
+      - run_tests
+    if: always()
+    steps:
+      - uses: actions/checkout@v5
+      - run: source $VENV_PATH
+      - uses: databricks/setup-cli@main
+      - run: databricks bundle destroy --auto-approve
         working-directory: declarative-pipeline-cdc
         env:
           DATABRICKS_BUNDLE_ENV: staging

@@ -1,5 +1,6 @@
 # Databricks Asset Bundle Configuration
 # https://docs.databricks.com/dev-tools/bundles/
+# Workspace: fevm-serverless-stable-3ga4py
 
 bundle:
   name: declarative-pipeline-cdc
@@ -8,7 +9,7 @@ bundle:
 # Variables available across the bundle (use ${var.catalog}, ${var.schema})
 variables:
   catalog:
-    default: serverless_stable_az5k2q_catalog
+    default: serverless_stable_3ga4py_catalog
   schema:
     default: kevin_potter
 
@@ -18,25 +19,25 @@ targets:
   dev:
     default: true
     workspace:
-      host: https://fevm-serverless-stable-az5k2q.cloud.databricks.com/
+      host: https://fevm-serverless-stable-3ga4py.cloud.databricks.com/
       root_path: /Workspace/Users/${workspace.current_user.userName}/declarative-pipeline-cdc
 
   staging:
     workspace:
-      host: https://fevm-serverless-stable-az5k2q.cloud.databricks.com/
+      host: https://fevm-serverless-stable-3ga4py.cloud.databricks.com/
       root_path: /Workspace/deployments/staging/declarative-pipeline-cdc
 
   test:
     mode: development
     workspace:
-      host: https://fevm-serverless-stable-az5k2q.cloud.databricks.com/
+      host: https://fevm-serverless-stable-3ga4py.cloud.databricks.com/
       root_path: /Workspace/deployments/test/declarative-pipeline-cdc
     presets:
       name_prefix: "test_"
 
   prod:
     workspace:
-      host: https://fevm-serverless-stable-az5k2q.cloud.databricks.com/
+      host: https://fevm-serverless-stable-3ga4py.cloud.databricks.com/
       root_path: /Workspace/deployments/prod/declarative-pipeline-cdc
 
 
@@ -48,13 +49,13 @@ sync:
     - transformations/**/*.sql
     - transformations/**/*.ipynb
     - tests/**/*.ipynb
-    - tests/**/*.py
     - config/**/*.yml
   exclude:
     - "*.pyc"
     - "__pycache__"
     - ".dbx-test-results"
+    - "archive"
 
 # Include pipeline/job definitions
 include:
-  - resoucres/*.yml
+  - resources/*.yml
