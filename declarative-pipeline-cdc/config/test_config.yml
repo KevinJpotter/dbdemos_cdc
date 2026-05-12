@@ -1,40 +1,21 @@
 # Databricks Notebook Test Framework Configuration
 
 workspace:
-  # Authentication via DATABRICKS_HOST and DATABRICKS_TOKEN env vars.
-  # Uncomment to use a CLI profile instead:
-  # profile: "default"
+  # Authentication via DATABRICKS_CONFIG_PROFILE env var or --profile flag
 
 cluster:
-  # Libraries to install for remote execution
-  # dbx_test is required for remote test execution
   libraries:
     - pypi:
         package: "dbx_test"
-  # Add additional libraries as needed:
-  #   - pypi:
-  #       package: "pandas==2.0.0"
-  #   - whl: "git+https://github.com/your-org/your-package.git"
-  #   - whl: "/path/to/your/package.whl"
-  
-  # Use serverless compute (default, fastest option)
-  # Or specify a cluster:
-  # cluster_id: "your-cluster-id"
-  
-  # Or use a pre-created environment (recommended for serverless):
-  # environment_key: "your-environment-name"
 
 execution:
-  timeout: 600  # Timeout in seconds (10 minutes)
-  max_retries: 2
-  parallel: false  # Run notebooks as separate jobs so output can be captured per-task
-  # max_parallel_jobs: 5  # Maximum number of parallel jobs (default: 5)
+  timeout: 600
+  parallel: false
 
 reporting:
   output_dir: ".dbx-test-results"
   formats:
-    - "console"   # Print results to console
-    - "junit"     # JUnit XML for CI/CD pipelines
-    - "json"      # Machine-readable JSON report
-    - "html"      # Human-readable HTML report
+    - "console"
+    - "junit"
+    - "json"
   verbose: true
